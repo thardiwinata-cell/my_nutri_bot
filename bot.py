@@ -1,8 +1,8 @@
 import os
 import logging
-import anthropic
 import requests
 import base64
+import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -10,12 +10,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-SYSTEM_PROMPT = """Kamu adalah ahli gizi yang menganalisis foto makanan.
-Ketika user mengirim foto makanan, kamu WAJIB membalas HANYA dalam format ini (tanpa tambahan teks lain):
+PROMPT = """Kamu adalah ahli gizi yang menganalisis foto makanan.
+Ketika menerima foto makanan, balas HANYA dalam format ini:
 
 🍽️ *[Nama Makanan]*
 📏 Estimasi Porsi: [berat/ukuran]
@@ -25,9 +26,9 @@ Ketika user mengirim foto makanan, kamu WAJIB membalas HANYA dalam format ini (t
 🍚 Karbo: [angka] g
 🥑 Lemak: [angka] g
 
-📝 Catatan: [1 kalimat singkat tentang nilai gizi makanan ini]
+📝 Catatan: [1 kalimat singkat nilai gizi makanan ini]
 
-Jika gambar bukan makanan, balas: "Maaf, ini bukan foto makanan. Kirim foto makanan ya! 🙏"
+Jika bukan foto makanan, balas: "Maaf, ini bukan foto makanan. Kirim foto makanan ya! 🙏"
 Berikan estimasi terbaik meskipun tidak 100% akurat."""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,7 +50,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Foto makananmu\n"
         "2. Kirim ke sini\n"
         "3. Tunggu analisis ~5 detik\n\n"
-        "💡 *Tips:*\n"
+        "💡 *Tips akurasi:*\n"
         "• Foto dari atas (top-down) lebih akurat\n"
         "• Pastikan makanan terlihat jelas\n"
         "• Sertakan alat makan/tangan untuk estimasi porsi",
@@ -62,38 +63,18 @@ async def analyze_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
-        file_url = file.file_path
-
-        response = requests.get(file_url)
+        response = requests.get(file.file_path)
         image_data = base64.standard_b64encode(response.content).decode("utf-8")
 
-        result = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": image_data,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": "Analisis kandungan gizi makanan dalam foto ini."
-                        }
-                    ],
-                }
-            ],
-        )
+        image_part = {
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": image_data
+            }
+        }
 
-        analysis = result.content[0].text
-        await msg.edit_text(analysis, parse_mode="Markdown")
+        result = model.generate_content([PROMPT, image_part])
+        await msg.edit_text(result.text, parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Error: {e}")
